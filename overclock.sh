@@ -1,14 +1,16 @@
 #!/bin/bash
+set -e
+# expects a configuration file in the same directory contains a configuration for this box.
+# Configuration file should be in the format: ${hostname}.oc.config
+# Does minimal sanity checking on overclock settings, use with caution.
+
+
 #IF HOSTNAME CONTAINS SPACES THIS WHOLE SCRIPT IS FUCKED
 #MAKE SURE YOU HAVE $hostname.oc.config in the current directory
 
 #The following MIN/MAX variables are absolute limits for this script.
 #It will not overclock higher or lower than these values.
 #If a configuration file contains a value outside of these ranges, script fails
-
-set -e
-false
-
 #GPUTargetFanSpeed
 MIN_FAN_SPEED=50
 MAX_FAN_SPEED=100
@@ -83,13 +85,15 @@ if [ $isvalid == 'notvalid' ] ; then
 	exit 1
 fi
 
-#TODO: check if nvidia-smi and nvidia-settings exist. If they don't exit
-
+if ! $(which nvidia-settings &> /dev/null) ; then
+    echo "nvidia-settings not installed..."
+    exit 2
+fi
 
 #Display looks valid, check we have the right number of cards
 DETECTED_CARDS=$(nvidia-smi --query-gpu=name --format=csv,noheaders | wc -l)
 
-if [ "$DETECTED_CARDS" == "$CARDS" ] ; then
+if [ "$DETECTED_CARDS" -ne "$CARDS" ] ; then
 	echo "Configuring for $CARDS cards but detected $DETECTED_CARDS cards"
 	exit 2
 fi
@@ -100,7 +104,9 @@ TEST_NVIDIA_CMD="nvidia-settings -q CurrentMetaMode"
 
 if ! $TEST_NVIDIA_CMD ; then
 	echo "nvidia-settings failed with exit code $?"
-	echo "To see error, run '$TEST_NVIDIA_CMD'"
+    echo "It's probably an invalid DISPLAY.. we used $DISPLAY"
+	echo "To see error in detail, run '$TEST_NVIDIA_CMD'"
+    exit 2
 fi
 
 ## ===---===---=== OVERCLOCKING FUNCTIONS ===---===---=== ##
@@ -142,11 +148,11 @@ function setup_fans {
         enable_fan_cmd="nvidia-settings -c "$DISPLAY" -a [gpu:"$gpuid"]/GPUFanControlState=1"
         fan_speed_cmd="nvidia-settings -c "$DISPLAY" -a [fan:"$gpuid"]/GPUTargetFanSpeed=${GPUTargetFanSpeed[$gpuid]}"
 
-        echo "Setting up fans for GPU${gpuid}"
-        echo "$enable_fan_cmd"
-        echo "$fan_speed_cmd"
+        echo -n "GPU${gpuid} fan speed $target_fan_speed"
+        echo "  $enable_fan_cmd"
+        echo "  $fan_speed_cmd"
     else
-        echo "Leaving fans on auto for GPU${gpuid}"
+        echo -n "GPU${gpuid} autofan"
     fi
 }
 
@@ -158,16 +164,16 @@ function setup_mem_clock {
 
     #If target speed is 0 then just leave it alone.
     if [ "$target_speed" -eq 0 ] ; then
-        echo "Leaving Memory at default clock speed for GPU$gpuid"
+        echo "GPU$gpuid memory offset default"
         return 
     fi
 
     #Check it's within the range.. this will also fail if it's not an int
     if [ "$target_speed" -ge "$MIN_MEM_SPEED" -a "$target_speed" -le "$MAX_MEM_SPEED" ] ; then
-        echo "Overclocking GPU$gpuid's memory by $target_speed"
+        echo -n "GPU$gpuid memory offset $target_speed"
         #We are good to go with the overclock!
         mem_cmd="nvidia-settings -c $DISPLAY -a [gpu:$gpuid]/GPUMemoryTransferRateOffset=$target_speed"
-        echo "$mem_cmd"
+        echo "  $mem_cmd"
     else
         echo "Passed an invalid GPU memory offset.."
         echo "Passed : $target_speed, min is $MIN_MEM_SPEED and max is $MAX_MEM_SPEED"
@@ -185,7 +191,8 @@ function setup_power_limit {
     if [ "$power_limit" -ge "$MIN_POWER_LIMIT" -a "$power_limit" -le "$MAX_POWER_LIMIT" ] ; then
         #We are good to set the power limit
         pl_cmd="nvidia-smi -i $gpuid -pl $power_limit"
-        echo "$pl_cmd"
+        echo -n "GPU$gpuid power limit $power_limit"
+        echo "  $pl_cmd"
     else
         echo "Passed an invalid power limit"
         echo "Passed : $power_limit, min is $MIN_POWER_LIMIT and max is $MAX_POWER_LIMIT"
@@ -197,9 +204,9 @@ function setup_power_limit {
 #$1 - gpuid to set persistence for
 function setup_persistence {
     gpuid=$1
-    echo "Setting up persistence for GPU${gpuid}"
+    echo -n "GPU${gpuid} persistence"
     per_cmd="nvidia-smi -i $gpuid -pm ENABLED"
-    echo "$per_cmd"
+    echo "  $per_cmd"
 }
 
 ###Function which sets the core clock offset using the configuration file sourced
@@ -211,7 +218,8 @@ function setup_core_clock {
 
     if [ "$core_clock" -ge "$MIN_CORE_CLOCK" -a "$core_clock" -le "$MAX_CORE_CLOCK" ] ; then
         core_cmd="nvidia-settings -c $DISPLAY -a [gpu:$gpuid]/GPUGraphicsClockOffset=$core_clock"
-        echo $core_cmd
+        echo -n "GPU${gpuid} core offset $core_clock"
+        echo "  $core_cmd"
     else
         echo "Passed an invalid GPUGraphicsClockOffset"
         echo "Passed : $core_clock, min is $MIN_CORE_CLOCK and max is $MAX_CORE_CLOCK"
@@ -224,12 +232,12 @@ function setup_core_clock {
 #$1 - gpuid to set the PowerMizer mode for
 function setup_power_mizer {
     gpuid=$1
-    echo "Setting up PowerMizer for GPU$gpuid"
     power_mizer=${GPUPowerMizer[$gpuid]}
     #Check it's within our limits
     if [ "$power_mizer" -ge "$MIN_POWER_MIZER" -a "$power_mizer" -le "$MAX_POWER_LIMIT" ] ; then
         pm_cmd="nvidia-settings -c $DISPLAY -a [gpu:$gpuid]/PowerMizerMode=$power_mizer"
-        echo $pm_cmd
+        echo -n "GPU$gpuid power mizer $power_mizer"
+        echo "  $pm_cmd"
     else
         echo "Passed an invalid PowerMizerMode"
         echo "Passed : $power_mizer, min is $MIN_POWER_MIZER and max is $MAX_POWER_MIZER"
@@ -240,15 +248,11 @@ function setup_power_mizer {
 #Main overclocking loop
 for (( gpu=0;gpu<"$CARDS";gpu++ )) ; do
     setup_persistence $gpu
-    [ "$SET_PM" == "YUP" ] && setup_power_mizer $gpu
-    [ "$SET_PL" == "YUP" ] && setup_power_limit $gpu
+    [ "$SET_PM" == "YUP" ] && setup_power_mizer $gpu && echo " Done."
+    [ "$SET_PL" == "YUP" ] && setup_power_limit $gpu && echo " Done."
     #actual overclocking
-    [ "$SET_FAN" == "YUP" ] && setup_fans $gpu
-    [ "$SET_MEM" == "YUP" ] && setup_mem_clock $gpu
-    [ "$SET_CORE" == "YUP" ] && setup_core_clock $gpu
+    [ "$SET_FAN" == "YUP" ] && setup_fans $gpu && echo " Done."
+    [ "$SET_MEM" == "YUP" ] && setup_mem_clock $gpu echo " Done."
+    [ "$SET_CORE" == "YUP" ] && setup_core_clock $gpu echo " Done."
     #TODO: find out how to do voltage
 done
-
-exit 5
-    
-#nvidia-settings -c :1 -a [gpu:1]/GPUMemoryTransferRateOffset[3]=1500
