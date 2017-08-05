@@ -36,12 +36,22 @@ MIN_POWER_MIZER=0
 
 #Not using nvidia-settings --load-config because you have to do some stuff with
 #nvidia-smi (power limit, persistence mode)
-CFG_FILE=$PWD/$HOSTNAME.oc.config
+
+
+if [ -e $1 ] ; then
+	CFG_FILE=$1
+else
+	CFG_FILE=$PWD/$HOSTNAME.oc.config
+fi
 
 if ! [ -e "$CFG_FILE" ] ; then
     echo "No config file found for this host ($HOSTNAME)"
     exit 2
 fi
+
+echo "Using configuration file $CFG_FILE.. press any key to continue"
+read
+
 
 #Now source the config file vars into our namespace
 echo "Found configuration file $CFG_FILE"
@@ -163,10 +173,10 @@ function setup_mem_clock {
     target_speed=${GPUMemoryTransferRateOffset[$gpuid]}
 
     #If target speed is 0 then just leave it alone.
-    if [ "$target_speed" -eq 0 ] ; then
-        echo "GPU$gpuid memory offset default"
-        return 
-    fi
+    #if [ "$target_speed" -eq 0 ] ; then
+    #    echo "GPU$gpuid memory offset default"
+    #    return 
+    #fi
 
     #Check it's within the range.. this will also fail if it's not an int
     if [ "$target_speed" -ge "$MIN_MEM_SPEED" -a "$target_speed" -le "$MAX_MEM_SPEED" ] ; then
